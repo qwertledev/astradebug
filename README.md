@@ -1,13 +1,71 @@
-# RGB keyboard stand — LED debug
+# RGB keyboard stand — lighting + LED debug
 
 Symptom reported: **on USB plug-in the LEDs give one faint, brief red burst, then go dark.**
+The board is recognised by the PC and files can be copied to it.
 
-Short version: that is almost certainly **not** a soldering fault. It is CircuitPython's
-built-in status-LED error code, and it means `code.py` is raising an exception. The LEDs,
-the data line, the ground return and the 5 V rail are all working well enough to light the
-strip — the firmware is lighting it *on purpose*, to tell you something crashed.
+That combination rules out the hardware. A board that enumerates and mounts `CIRCUITPY` is
+not browning out and is not shorting VBUS, and LEDs that visibly light have working solder
+joints, a working data line and a working ground return. What you were seeing is
+CircuitPython's built-in status-LED error code — it means `code.py` raised an exception (or
+there was no `code.py` to run). The firmware was lighting the strip *on purpose*, to tell
+you so.
+
+## Make it glow
+
+**Nothing needs to be added to the hardware.** Copy `code.py` to the root of the `CIRCUITPY`
+drive and the stand lights up — it starts as soon as the file finishes copying.
+
+Open `code.py` and set one value:
+
+```python
+NUM_PIXELS = 16        # <-- your real LED count
+```
+
+That is normally the only edit. It cycles rainbow → breathe → comet, and needs **no
+libraries** — it drives the LEDs through the built-in `neopixel_write` module rather than
+the `neopixel` library, so there is no bundle to download and no version mismatch to get
+wrong (a mismatched bundle is the most common cause of the red-blink you saw).
+
+Other knobs at the top of the file:
+
+| Setting | Purpose |
+| --- | --- |
+| `BRIGHTNESS` | `0.0`–`1.0`, default `0.25`. See the power note below. |
+| `COLOR_ORDER` | `"GRB"` for WS2812B. Switch to `"RGB"` if red and green come out swapped. |
+| `EFFECTS` | Which effects cycle, and in what order. Use a single entry to pin one. |
+| `EFFECT_SECONDS` | Seconds per effect; set to `None` to never switch. |
+| `DATA_PIN_NAME` | Only needed if the pin is not auto-detected — the error message tells you. |
+
+If you would rather use the `neopixel` library (for its `auto_write`/slicing API), install it
+from the [CircuitPython bundle](https://circuitpython.org/libraries) into `CIRCUITPY/lib/` —
+and match the bundle to the firmware major version. This build reports `9.0.0-alpha.1`, so
+use the **9.x** bundle; an 8.x `.mpy` will fail to import and put you right back at the two
+red blinks.
+
+### Power
+
+`BRIGHTNESS = 0.25` is chosen to stay comfortably inside a USB 2.0 port's 500 mA, and none of
+the effects light every LED at full white at once. Before turning it up:
+
+```
+python3 tools/power_budget.py 16
+```
+
+16 WS2812Bs at full white is ~976 mA — already double what a USB 2.0 port supplies. If the
+strip browns out or the board resets when you raise `BRIGHTNESS`, that is the port's current
+limit rather than a bug: feed the strip from its own 5 V supply with the grounds tied
+together.
+
+Optional, only if you get flicker or the first LED misbehaves later on — a 300–500 Ω resistor
+in series with the data line and a ~1000 µF capacitor across 5 V/GND near the strip. Yours is
+evidently working without them, so don't add them pre-emptively.
 
 ---
+
+## Reference: what the red burst meant
+
+Kept because the blink codes are worth knowing — they tell you what went wrong without a
+serial console.
 
 ## 1. Why the symptom points at software, not solder
 
@@ -155,11 +213,13 @@ Then it isn't the exception indicator, and hardware is back on the table. In pri
    power-on garbage.
 5. **LED power gate.** Some board definitions gate LED power behind a pin
    (`NEOPIXEL_POWER` / `CIRCUITPY_STATUS_LED_POWER`) that your code must drive. The
-   diagnostic in `code.py` detects and enables this automatically.
+   diagnostic detects and enables this automatically, as does `code.py`.
 
 ## 6. Using the diagnostic
 
-Copy `code.py` to the root of the `CIRCUITPY` drive, then open the serial console.
+Only needed if the lights misbehave. Copy `diagnostic.py` **over** `code.py` on the
+`CIRCUITPY` drive (keep your own `code.py` somewhere first), then open the serial console.
+Restore `code.py` when you're done.
 
 It deliberately uses the **built-in `neopixel_write` module**, not the `neopixel` library, so
 it runs even when a missing/mismatched bundle is the root cause. It:
@@ -188,5 +248,6 @@ Read the output top to bottom:
 
 | File | Runs on | Purpose |
 | --- | --- | --- |
-| `code.py` | the board | Staged, low-current LED diagnostic |
+| `code.py` | the board | **The lighting.** Copy to `CIRCUITPY` and it glows. No libraries needed. |
+| `diagnostic.py` | the board | Staged, low-current LED diagnostic. Only if something misbehaves. |
 | `tools/power_budget.py` | your PC | Current-draw estimate vs USB budget |

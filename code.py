@@ -1,282 +1,194 @@
-# RGB keyboard stand - staged LED diagnostic
+# RGB keyboard stand - lighting
 #
-# Copy to the root of the CIRCUITPY drive and open the serial console.
+# Drop this on the root of the CIRCUITPY drive as `code.py` and the stand glows.
 #
-# Uses the built-in `neopixel_write` module rather than the `neopixel` library, so
-# it still runs when a missing or version-mismatched library bundle is the actual
-# root cause. Current draw is kept tiny until the final stage, so a marginal 5 V
-# rail cannot brown out mid-test and hide the result.
+# No libraries needed. This drives the LEDs through the built-in `neopixel_write`
+# module rather than the `neopixel` library, so there is no bundle to download and
+# no version mismatch to get wrong. Nothing to add to the hardware either.
+#
+# Set NUM_PIXELS below to your real LED count. That is usually the only edit.
 
-import sys
 import time
 
 import board
 import digitalio
-import microcontroller
-import supervisor
-
-try:
-    import neopixel_write
-except ImportError:
-    neopixel_write = None
+import neopixel_write
 
 # ----------------------------------------------------------------- config ----
 
-NUM_PIXELS = 16        # set this to your real LED count
-BYTES_PER_PIXEL = 3    # 3 = WS2812/WS2812B/SK6812 RGB, 4 = SK6812 RGBW
-COLOR_ORDER = "GRB"    # WS2812B is GRB. Try "RGB" if colours come out swapped.
+NUM_PIXELS = 16        # <-- set this to your real LED count
+BRIGHTNESS = 0.25      # 0.0-1.0. See the power note at the bottom of this file.
+COLOR_ORDER = "GRB"    # WS2812B is GRB. Use "RGB" if red and green come out swapped.
 DATA_PIN_NAME = None   # None = auto-detect, or force e.g. "GP0" / "NEOPIXEL"
 
-WALK_LEVEL = 24        # 0-255 per channel for the one-at-a-time walk (~9%)
-RAMP_LEVELS = (8, 24, 64, 128, 255)   # whole-strip stages
-MA_PER_CHANNEL = 20.0  # full-on current per colour channel, per LED
-MA_QUIESCENT = 1.0     # idle current per LED
-USB_BUDGET_MA = 500.0  # USB 2.0 host port
+EFFECTS = ("rainbow", "breathe", "comet")   # cycled in this order
+EFFECT_SECONDS = 20    # how long each effect runs; None = never switch
+FPS = 50
+
+# Perceptual correction. LEDs are linear, eyes are not; without this, fades look
+# like they snap to full near the top of the range and crush to black at the bottom.
+GAMMA = bytes(int(pow(i / 255, 2.6) * 255 + 0.5) for i in range(256))
+
+_ORDER = tuple("RGB".index(c) for c in COLOR_ORDER)
 
 # ---------------------------------------------------------------- helpers ----
 
 
-def hr(title=""):
-    print("\n" + "-" * 62)
-    if title:
-        print(title)
-        print("-" * 62)
+def wheel(pos):
+    """0-255 around the colour wheel -> (r, g, b) at full saturation."""
+    pos &= 255
+    if pos < 85:
+        return (255 - pos * 3, pos * 3, 0)
+    if pos < 170:
+        pos -= 85
+        return (0, 255 - pos * 3, pos * 3)
+    pos -= 170
+    return (pos * 3, 0, 255 - pos * 3)
 
 
-def show(obj, name):
-    """Print an attribute without letting introspection crash the run."""
-    try:
-        print("  {:<22} {}".format(name, obj()))
-    except Exception as exc:  # noqa: BLE001 - diagnostic, report everything
-        print("  {:<22} <unavailable: {}>".format(name, exc))
+def scale(rgb, level):
+    return (int(rgb[0] * level), int(rgb[1] * level), int(rgb[2] * level))
 
 
-def is_pin(obj):
-    return isinstance(obj, microcontroller.Pin)
+def render(pin_out, pattern):
+    """Gamma-correct, apply brightness, reorder to the wire format, and send."""
+    buf = bytearray(NUM_PIXELS * 3)
+    for i, rgb in enumerate(pattern):
+        base = i * 3
+        for slot, source in enumerate(_ORDER):
+            buf[base + slot] = int(GAMMA[rgb[source] & 255] * BRIGHTNESS)
+    neopixel_write.neopixel_write(pin_out, buf)
 
 
-def encode(rgb, order):
-    """Reorder an (r, g, b) tuple into the strip's wire order."""
-    r, g, b = rgb
-    channels = {"R": r, "G": g, "B": b}
-    out = [channels[c] for c in order]
-    if BYTES_PER_PIXEL == 4:
-        out.append(0)  # W channel off - we are testing the RGB dies
+# ---------------------------------------------------------------- effects ----
+
+
+def rainbow(t):
+    """Full spectrum wrapped around the strip, rotating."""
+    offset = int(t * 60)
+    return [wheel(offset + i * 255 // NUM_PIXELS) for i in range(NUM_PIXELS)]
+
+
+def breathe(t):
+    """Whole strip one slowly drifting hue, swelling and fading."""
+    phase = (t / 5.0) % 1.0
+    level = 1.0 - abs(phase * 2.0 - 1.0)       # triangle wave, 0 -> 1 -> 0
+    level = 0.05 + 0.95 * level                # never fully dark
+    return [scale(wheel(int(t * 8)), level)] * NUM_PIXELS
+
+
+def comet(t):
+    """A bright head chasing a fading tail around the strip."""
+    tail = max(3, NUM_PIXELS // 3)
+    head = (t * 12.0) % NUM_PIXELS
+    colour = wheel(int(t * 20))
+    out = []
+    for i in range(NUM_PIXELS):
+        distance = (head - i) % NUM_PIXELS
+        level = 1.0 - distance / tail
+        out.append(scale(colour, level) if level > 0 else (0, 0, 0))
     return out
 
 
-def buffer_for(pattern):
-    """pattern: list of (r, g, b), one per pixel."""
-    buf = bytearray(NUM_PIXELS * BYTES_PER_PIXEL)
-    for i, rgb in enumerate(pattern):
-        buf[i * BYTES_PER_PIXEL:(i + 1) * BYTES_PER_PIXEL] = bytes(
-            encode(rgb, COLOR_ORDER)
-        )
-    return buf
+RENDERERS = {"rainbow": rainbow, "breathe": breathe, "comet": comet}
+
+# ------------------------------------------------------------------ setup ----
 
 
-def estimate_ma(pattern):
-    total = MA_QUIESCENT * len(pattern)
-    for r, g, b in pattern:
-        total += (r + g + b) / 255.0 * MA_PER_CHANNEL
-    return total
+def is_pin(obj):
+    import microcontroller
+    return isinstance(obj, microcontroller.Pin)
 
 
-def write(pin_out, pattern):
-    neopixel_write.neopixel_write(pin_out, buffer_for(pattern))
-
-
-def blank(pin_out):
-    write(pin_out, [(0, 0, 0)] * NUM_PIXELS)
-
-
-# ------------------------------------------------------------ 1. the board ----
-
-
-def report_environment():
-    hr("1. ENVIRONMENT")
-    show(lambda: sys.implementation.name, "implementation")
-    show(lambda: ".".join(str(v) for v in sys.implementation.version), "version")
-    show(lambda: sys.platform, "platform")
-    show(lambda: board.board_id, "board_id")
-    show(lambda: microcontroller.cpu.reset_reason, "reset_reason")
-    show(lambda: supervisor.runtime.safe_mode_reason, "safe_mode_reason")
-    show(lambda: supervisor.runtime.usb_connected, "usb_connected")
-    show(lambda: supervisor.runtime.serial_connected, "serial_connected")
-
-    print("\n  Interpreting the two that matter:")
-    print("    reset_reason == BROWNOUT      -> the 5 V rail is collapsing (power problem)")
-    print("    safe_mode_reason != NONE      -> code.py was skipped entirely this boot")
-    print("    both NONE/POWER_ON            -> clean boot; a red 2-blink is a code.py bug")
-
-
-# ------------------------------------------------------------- 2. the pins ----
-
-
-def find_pins():
-    hr("2. PIN DISCOVERY")
-
-    names = sorted(n for n in dir(board) if not n.startswith("_"))
-    pins = [n for n in names if is_pin(getattr(board, n, None))]
-    print("  {} pin objects exposed by `board`".format(len(pins)))
-    print("  " + ", ".join(pins) if pins else "  (none)")
-
-    power = [n for n in pins if "POWER" in n.upper()]
-    if power:
-        print("\n  LED power-gate candidates: {}".format(", ".join(power)))
-
+def find_data_pin():
     if DATA_PIN_NAME:
-        chosen = DATA_PIN_NAME
-        print("\n  Data pin forced by config: {}".format(chosen))
-    else:
-        preferred = [n for n in pins if "NEOPIXEL" in n.upper() and "POWER" not in n.upper()]
-        chosen = preferred[0] if preferred else None
-        if chosen:
-            print("\n  Auto-detected data pin: board.{}".format(chosen))
-        else:
-            print("\n  !! No NEOPIXEL pin exposed by this board definition.")
-            print("     Set DATA_PIN_NAME at the top of this file to the pin you")
-            print("     actually soldered the strip's DIN to, e.g. \"GP0\".")
-
-    return chosen, power
+        return DATA_PIN_NAME
+    candidates = [
+        n for n in dir(board)
+        if "NEOPIXEL" in n.upper()
+        and "POWER" not in n.upper()
+        and is_pin(getattr(board, n, None))
+    ]
+    return candidates[0] if candidates else None
 
 
-def enable_power(power_names):
-    """Drive any LED power-gate pin so the strip is actually fed."""
+def is_led_power(name):
+    """A power-gate pin for the LEDs specifically - not some unrelated rail."""
+    upper = name.upper()
+    return "POWER" in upper and ("NEOPIXEL" in upper or "LED" in upper)
+
+
+def enable_power():
+    """Some boards gate LED power behind a pin that has to be driven high."""
     held = []
-    for name in power_names:
-        try:
-            gate = digitalio.DigitalInOut(getattr(board, name))
-            gate.direction = digitalio.Direction.OUTPUT
-            gate.value = True
-            held.append(gate)
-            print("  enabled board.{} (set high)".format(name))
-        except Exception as exc:  # noqa: BLE001
-            print("  could not drive board.{}: {}".format(name, exc))
+    for name in dir(board):
+        if is_led_power(name) and is_pin(getattr(board, name, None)):
+            try:
+                gate = digitalio.DigitalInOut(getattr(board, name))
+                gate.direction = digitalio.Direction.OUTPUT
+                gate.value = True
+                held.append(gate)
+                print("enabled board.{}".format(name))
+            except Exception as exc:  # noqa: BLE001
+                print("could not drive board.{}: {}".format(name, exc))
     return held
 
 
-# ------------------------------------------------------- 3. data-line test ----
-
-
-def walk(pin_out):
-    """One LED at a time, dim. Draws a few mA - tests DATA, not power."""
-    hr("3. DATA TEST - one LED at a time, ~{}% brightness".format(
-        round(WALK_LEVEL / 255 * 100)))
-    print("  Each pixel should light white in turn, from the DIN end outward.")
-    print("  Estimated peak draw: {:.0f} mA - safe on any USB port.\n".format(
-        estimate_ma([(WALK_LEVEL,) * 3]) + MA_QUIESCENT * NUM_PIXELS))
-
-    for i in range(NUM_PIXELS):
-        pattern = [(0, 0, 0)] * NUM_PIXELS
-        pattern[i] = (WALK_LEVEL, WALK_LEVEL, WALK_LEVEL)
-        write(pin_out, pattern)
-        print("    pixel {:>3} / {}".format(i + 1, NUM_PIXELS))
-        time.sleep(0.15)
-
-    blank(pin_out)
-    print("\n  How many lit?")
-    print("    all of them      -> data path is good, go to stage 4")
-    print("    none             -> wrong data pin, DIN/DOUT reversed, or no common ground")
-    print("    only the first N -> break in the chain after pixel N (check that joint)")
-
-
-def colours(pin_out):
-    hr("4. COLOUR ORDER - whole strip, still dim")
-    for name, rgb in (("RED", (WALK_LEVEL, 0, 0)),
-                      ("GREEN", (0, WALK_LEVEL, 0)),
-                      ("BLUE", (0, 0, WALK_LEVEL))):
-        write(pin_out, [rgb] * NUM_PIXELS)
-        print("    showing {}".format(name))
-        time.sleep(0.8)
-    blank(pin_out)
-    print("\n  If the names don't match what you saw, change COLOR_ORDER at the top")
-    print("  (WS2812B = \"GRB\"; some clones are \"RGB\").")
-
-
-# ------------------------------------------------------ 4. the power ramp ----
-
-
-def ramp(pin_out):
-    hr("5. POWER TEST - whole strip, increasing brightness")
-    print("  Watch for the stage where it dims, flickers, glitches or resets.")
-    print("  Each stage is printed BEFORE it is applied, so the last line you")
-    print("  see in the console is the stage that killed it.\n")
-
-    for level in RAMP_LEVELS:
-        pattern = [(level, level, level)] * NUM_PIXELS
-        ma = estimate_ma(pattern)
-        verdict = "OK" if ma <= USB_BUDGET_MA else "OVER USB BUDGET"
-        print("    level {:>3}/255  ~{:>6.0f} mA  [{}]".format(level, ma, verdict))
-        time.sleep(0.3)
-        write(pin_out, pattern)
-        time.sleep(1.0)
-
-    blank(pin_out)
-    print("\n  Reached full brightness without a reset -> power delivery is fine.")
-
-
-# ----------------------------------------------------------------- driver ----
-
-
 def main():
-    print("\n" + "=" * 62)
-    print("RGB keyboard stand - LED diagnostic")
-    print("{} pixels, {} bytes each, {} order".format(
-        NUM_PIXELS, BYTES_PER_PIXEL, COLOR_ORDER))
-    print("=" * 62)
-
-    report_environment()
-
-    if neopixel_write is None:
-        hr("STOPPED")
-        print("  This firmware has no `neopixel_write` module, so it cannot drive")
-        print("  WS2812-style LEDs at all. That would be a firmware build problem.")
-        return
-
-    pin_name, power_names = find_pins()
+    pin_name = find_data_pin()
     if pin_name is None:
-        hr("STOPPED")
-        print("  No data pin to test. Set DATA_PIN_NAME and re-run.")
-        return
+        raise RuntimeError(
+            "No NEOPIXEL pin found on this board. Set DATA_PIN_NAME at the top "
+            "of code.py to the pin your strip's DIN is soldered to, e.g. \"GP0\"."
+        )
 
-    held = enable_power(power_names)
+    print("stand lighting: {} pixels on board.{}, brightness {}".format(
+        NUM_PIXELS, pin_name, BRIGHTNESS))
+
+    enable_power()
 
     pin_out = digitalio.DigitalInOut(getattr(board, pin_name))
     pin_out.direction = digitalio.Direction.OUTPUT
-    try:
-        blank(pin_out)
-        walk(pin_out)
-        colours(pin_out)
-        ramp(pin_out)
-    finally:
-        try:
-            blank(pin_out)
-        except Exception:  # noqa: BLE001
-            pass
-        pin_out.deinit()
-        for gate in held:
-            gate.deinit()
 
-    hr("DONE")
-    print("  Diagnostic finished cleanly and released the pin.")
-    print()
-    print("  Now watch the strip for 15 seconds. Because code.py exited without")
-    print("  an exception you should see ONE faint GREEN blink every ~5 seconds")
-    print("  instead of the two red ones.")
-    print()
-    print("  If red-2 became green-1, that proves the burst you were chasing was")
-    print("  CircuitPython's exception indicator - the LEDs and wiring are fine,")
-    print("  and the bug is an exception in your own code.py.")
+    frame_time = 1.0 / FPS
+    index = 0
+    started = time.monotonic()
+
+    while True:
+        now = time.monotonic()
+
+        if EFFECT_SECONDS and now - started >= EFFECT_SECONDS:
+            index = (index + 1) % len(EFFECTS)
+            started = now
+            print("effect: {}".format(EFFECTS[index]))
+
+        render(pin_out, RENDERERS[EFFECTS[index]](now))
+        time.sleep(frame_time)
 
 
 try:
     main()
-except Exception as err:  # noqa: BLE001 - the whole point is to surface this
-    hr("DIAGNOSTIC ITSELF RAISED")
+except Exception as err:  # noqa: BLE001 - surface it instead of a bare red blink
+    # Without this you get CircuitPython's two faint red status blinks and no
+    # explanation. Print the real traceback to the serial console instead.
+    print("\n--- code.py failed ---")
     try:
         import traceback
         traceback.print_exception(err)
-    except Exception:  # noqa: BLE001 - older/newer traceback signatures
-        print("  {}: {}".format(type(err).__name__, err))
-    print("\n  Note the exception type above - see section 3 of README.md.")
+    except Exception:  # noqa: BLE001 - traceback signatures vary by version
+        print("{}: {}".format(type(err).__name__, err))
+    raise
+
+
+# Power note
+# ----------
+# WS2812B LEDs draw up to ~60 mA each at full white; a USB 2.0 port gives 500 mA.
+# BRIGHTNESS caps that, and none of the effects above light every LED at full
+# white simultaneously, so 0.25 is comfortable for a typical stand. Before turning
+# it up, check the headroom:
+#
+#     python3 tools/power_budget.py <your led count>
+#
+# If the strip browns out or the board resets when you raise BRIGHTNESS, that is
+# the USB port's current limit, not a bug - feed the strip from its own 5 V supply
+# with the grounds tied together.
