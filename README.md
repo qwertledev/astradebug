@@ -10,30 +10,32 @@ CircuitPython's built-in status-LED error code — it means `code.py` raised an 
 there was no `code.py` to run). The firmware was lighting the strip *on purpose*, to tell
 you so.
 
+## The stand
+
+PCB slot-construction, soldered for power, data and stability, with rubber edging to prevent
+scratching. **30 × WS2812B**, a USB-C port for power and data, driven by an **RP2040 running
+CircuitPython**.
+
 ## Make it glow
 
 **Nothing needs to be added to the hardware.** Copy `code.py` to the root of the `CIRCUITPY`
-drive and the stand lights up — it starts as soon as the file finishes copying.
+drive and the stand lights up — it starts as soon as the file finishes copying. `NUM_PIXELS`
+is already set to 30, so there is nothing to edit.
 
-Open `code.py` and set one value:
+It cycles rainbow → breathe → comet, and needs **no libraries** — it drives the LEDs through
+the built-in `neopixel_write` module rather than the `neopixel` library, so there is no
+bundle to download and no version mismatch to get wrong (a mismatched bundle is the most
+likely cause of the red-blink you saw).
 
-```python
-NUM_PIXELS = 16        # <-- your real LED count
-```
-
-That is normally the only edit. It cycles rainbow → breathe → comet, and needs **no
-libraries** — it drives the LEDs through the built-in `neopixel_write` module rather than
-the `neopixel` library, so there is no bundle to download and no version mismatch to get
-wrong (a mismatched bundle is the most common cause of the red-blink you saw).
-
-Other knobs at the top of the file:
+Knobs at the top of the file:
 
 | Setting | Purpose |
 | --- | --- |
-| `BRIGHTNESS` | `0.0`–`1.0`, default `0.25`. See the power note below. |
+| `BRIGHTNESS` | `0.0`–`1.0`, default `0.5`. Safe to raise to `1.0` — see below. |
 | `COLOR_ORDER` | `"GRB"` for WS2812B. Switch to `"RGB"` if red and green come out swapped. |
 | `EFFECTS` | Which effects cycle, and in what order. Use a single entry to pin one. |
 | `EFFECT_SECONDS` | Seconds per effect; set to `None` to never switch. |
+| `MAX_MILLIAMPS` | Hard current ceiling, default `450`. See below. |
 | `DATA_PIN_NAME` | Only needed if the pin is not auto-detected — the error message tells you. |
 
 If you would rather use the `neopixel` library (for its `auto_write`/slicing API), install it
@@ -42,19 +44,38 @@ and match the bundle to the firmware major version. This build reports `9.0.0-al
 use the **9.x** bundle; an 8.x `.mpy` will fail to import and put you right back at the two
 red blinks.
 
-### Power
+### Power — 30 LEDs on USB
 
-`BRIGHTNESS = 0.25` is chosen to stay comfortably inside a USB 2.0 port's 500 mA, and none of
-the effects light every LED at full white at once. Before turning it up:
+30 WS2812Bs at full white is **~1830 mA**, against 500 mA from a USB 2.0 port. That sounds
+like a problem and mostly isn't, because full white is the worst case and none of these
+effects produce it. They are built on `wheel()`, which returns a saturated hue whose three
+channels always sum to 255 — the cost of *one* channel at full, not three.
+
+Measured peak draw across a 30 s run of each effect at 30 LEDs:
+
+| `BRIGHTNESS` | rainbow | breathe | comet |
+| --- | --- | --- | --- |
+| 0.25 | 113 mA | 141 mA | 46 mA |
+| 0.50 | 198 mA | 251 mA | 63 mA |
+| 1.00 | 368 mA | 475 mA | 96 mA |
+
+So **even `BRIGHTNESS = 1.0` fits inside a USB 2.0 port.** `0.5` is the default only because
+it leaves comfortable headroom for the RP2040 itself. Turn it up if you want it brighter.
+
+Your USB-C port helps further: the RP2040 doesn't negotiate USB-PD, so it takes whatever the
+port offers by default — 500 mA at worst, commonly 900 mA–1.5 A from a USB-C host. Sizing to
+500 mA is the safe assumption, and you are likely to have more.
+
+`MAX_MILLIAMPS` (default 450) is the backstop. Every frame is estimated before it is sent,
+and any frame over the ceiling is dimmed *as a whole* — preserving relative colour, so the
+effect keeps looking right and just loses a little peak brightness. At `BRIGHTNESS = 1.0` it
+trims a handful of breathe's brightest frames from 475 mA to 446 mA. It matters most if you
+write your own effect that does light everything white: it gets trimmed instead of collapsing
+the rail. Check any change with:
 
 ```
-python3 tools/power_budget.py 16
+python3 tools/power_budget.py 30
 ```
-
-16 WS2812Bs at full white is ~976 mA — already double what a USB 2.0 port supplies. If the
-strip browns out or the board resets when you raise `BRIGHTNESS`, that is the port's current
-limit rather than a bug: feed the strip from its own 5 V supply with the grounds tied
-together.
 
 Optional, only if you get flicker or the first LED misbehaves later on — a 300–500 Ω resistor
 in series with the data line and a ~1000 µF capacitor across 5 V/GND near the strip. Yours is

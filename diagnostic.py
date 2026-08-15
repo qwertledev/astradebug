@@ -24,7 +24,7 @@ except ImportError:
 
 # ----------------------------------------------------------------- config ----
 
-NUM_PIXELS = 16        # set this to your real LED count
+NUM_PIXELS = 30        # WS2812B count on the stand
 BYTES_PER_PIXEL = 3    # 3 = WS2812/WS2812B/SK6812 RGB, 4 = SK6812 RGBW
 COLOR_ORDER = "GRB"    # WS2812B is GRB. Try "RGB" if colours come out swapped.
 DATA_PIN_NAME = None   # None = auto-detect, or force e.g. "GP0" / "NEOPIXEL"
