@@ -1,14 +1,73 @@
 # RGB keyboard stand — lighting + LED debug
 
-Symptom reported: **on USB plug-in the LEDs give one faint, brief red burst, then go dark.**
-The board is recognised by the PC and files can be copied to it.
+Symptom reported: **on USB plug-in the LEDs give one faint, brief red burst, then go dark**,
+and **files copied to the drive disappear every time it is reconnected.**
 
-That combination rules out the hardware. A board that enumerates and mounts `CIRCUITPY` is
-not browning out and is not shorting VBUS, and LEDs that visibly light have working solder
-joints, a working data line and a working ground return. What you were seeing is
-CircuitPython's built-in status-LED error code — it means `code.py` raised an exception (or
-there was no `code.py` to run). The firmware was lighting the strip *on purpose*, to tell
-you so.
+## Diagnosis: the board has no firmware on it
+
+The drive is named `RPI-RP2` and contains exactly two files. `INFO_UF2.TXT` reads:
+
+```
+UF2 Bootloader v3.0
+Model: Raspberry Pi RP2
+Board-ID: RPI-RP2
+```
+
+That is the RP2040's **ROM bootloader**, not CircuitPython. It is baked into the chip and is
+what an RP2040 falls back to when it has no valid firmware to run. It accepts `.uf2` firmware
+images and nothing else — any other file is discarded, which is exactly why `code.py`
+vanishes on every reconnect. It is not a filesystem for your files.
+
+So the board was never programmed. There is no bug to fix:
+
+- The **faint red burst** is the WS2812Bs' power-on state. Their internal latches come up
+  holding undefined values, so they flash briefly and then settle dark because nothing ever
+  sends them data. With no firmware running, nothing ever does.
+- The **hardware is fine.** It enumerates over USB, the bootloader mounts, and the LEDs
+  visibly light — so the 5 V rail, the ground return and the solder joints all work.
+
+Fix: flash CircuitPython, then load the lighting. Steps below.
+
+> Earlier in this repo's history the red burst was attributed to CircuitPython's status-LED
+> exception blink. That was wrong — it assumed CircuitPython was installed. `INFO_UF2.TXT`
+> settled it. The blink-code reference further down is still accurate and still worth knowing
+> once CircuitPython *is* running, which is why it has been kept.
+
+## Step 0 — flash CircuitPython
+
+1. Download the **Raspberry Pi Pico** build from
+   [circuitpython.org/board/raspberry_pi_pico](https://circuitpython.org/board/raspberry_pi_pico/)
+   — click the download button for the latest stable release (10.2.0 at time of writing).
+   Use this generic RP2040 build: the [Snipeye fork](https://github.com/Snipeye/circuitpython)
+   adds no custom board definition, only an IR `PulseIn` fix, and it publishes no prebuilt
+   `.uf2`. You only need to build that fork from source if you later want the IR behaviour.
+2. With the `RPI-RP2` drive showing, **drag the `.uf2` onto it**.
+3. The board reboots on its own. `RPI-RP2` disappears and a **`CIRCUITPY`** drive appears in
+   its place. That swap is how you know it worked.
+
+From then on you copy `.py` files to `CIRCUITPY`, and they persist.
+
+If `RPI-RP2` ever comes back, that is the bootloader again — either the board was reset while
+held in BOOTSEL, or the firmware did not take. Re-drag the `.uf2`.
+
+## Step 1 — find the data pin
+
+Stock Pico firmware knows nothing about this board, so `board.NEOPIXEL` does not exist and
+the data GPIO has to be identified. Copy **`find_pin.py`** onto `CIRCUITPY` **renamed to
+`code.py`**, then watch the strip while reading the serial console. It drives each GPIO in
+turn for 1.2 s and prints the pin name as it goes; when the strip lights, the pin printed at
+that moment is the one your DIN is soldered to. It loops, so you get as many passes as you
+need.
+
+Put that name into `code.py`:
+
+```python
+DATA_PIN_NAME = "GP0"      # whichever pin lit the strip
+```
+
+## Step 2 — make it glow
+
+Copy `code.py` onto `CIRCUITPY`. Details below.
 
 ## The stand
 
@@ -16,11 +75,11 @@ PCB slot-construction, soldered for power, data and stability, with rubber edgin
 scratching. **30 × WS2812B**, a USB-C port for power and data, driven by an **RP2040 running
 CircuitPython**.
 
-## Make it glow
+## The lighting — `code.py`
 
-**Nothing needs to be added to the hardware.** Copy `code.py` to the root of the `CIRCUITPY`
-drive and the stand lights up — it starts as soon as the file finishes copying. `NUM_PIXELS`
-is already set to 30, so there is nothing to edit.
+**Nothing needs to be added to the hardware.** Once CircuitPython is on the board and
+`DATA_PIN_NAME` is set, copy `code.py` to the root of the `CIRCUITPY` drive and the stand
+lights up — it starts as soon as the file finishes copying. `NUM_PIXELS` is already 30.
 
 It cycles rainbow → breathe → comet, and needs **no libraries** — it drives the LEDs through
 the built-in `neopixel_write` module rather than the `neopixel` library, so there is no
@@ -270,5 +329,9 @@ Read the output top to bottom:
 | File | Runs on | Purpose |
 | --- | --- | --- |
 | `code.py` | the board | **The lighting.** Copy to `CIRCUITPY` and it glows. No libraries needed. |
+| `find_pin.py` | the board | Identifies which GPIO the strip's DIN is on. Copy over `code.py` to run. |
 | `diagnostic.py` | the board | Staged, low-current LED diagnostic. Only if something misbehaves. |
 | `tools/power_budget.py` | your PC | Current-draw estimate vs USB budget |
+
+All three board scripts run as `code.py` — CircuitPython only ever executes that filename.
+Keep the others on the drive under their own names and copy whichever you need over `code.py`.
