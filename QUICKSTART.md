@@ -123,6 +123,35 @@ Anything up to `BRIGHTNESS = 1.0` is safe on USB — see the power section in `R
 
 ---
 
+## Optional: seeing the board's messages ("the serial console")
+
+Every script here prints what it is doing while it runs — which pin it is testing,
+which effect is playing, and the full text of any error. The board sends those messages
+down the USB cable already. The serial console is just a **text window that displays
+them**. Nothing to install on the board; it only changes what *you* can see.
+
+You never strictly need it. It replaces counting flashes with reading a line of text,
+and it is the only way to see an error message rather than guessing from blink patterns.
+
+**Setting it up (about two minutes):**
+
+1. Download the **Mu editor** from **https://codewith.mu/** and install it.
+2. Open Mu. The first time, it asks which mode you want — choose **CircuitPython**.
+   (If it doesn't ask, click the **Mode** button in the top-left and pick it.)
+3. Plug the stand in.
+4. Click the **Serial** button in Mu's toolbar.
+5. A black panel opens along the bottom. That's it — text appears there as the board runs.
+
+**Using it:**
+
+- Press **Ctrl+D** with that panel focused to restart the script from the beginning.
+- Select the text and copy it like any other window.
+- If the panel is empty, press Ctrl+D — you probably connected mid-run.
+
+**Reading it during `find_pin.py`:** the script prints a line like `GP7  <- watch now`
+just before it drives each pin. Watch the strip, and when it lights, look at the last
+line printed. That is your pin — no counting.
+
 ## If something goes wrong
 
 | Problem | What to do |
