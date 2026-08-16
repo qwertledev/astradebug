@@ -6,14 +6,17 @@
 #
 # Copy onto the CIRCUITPY drive renamed to `code.py`, then just watch the strip.
 # No serial console needed: when the correct pin is reached the strip lights, and
-# it then blinks its own number at you.
+# it then flashes its own number at you.
 #
-#   1. solid GREEN for a second  -> "this is the pin"
-#   2. long BLUE blinks          -> the tens digit
-#   3. short WHITE blinks        -> the units digit
+# The number is encoded in flash LENGTH, not colour, so it stays readable even if
+# the colour order is wrong or the strip turns out not to be plain RGB:
 #
-# So GREEN, then one long blue, then six short white = GP16.
-# GREEN with no blinks at all    = GP0.
+#   1. three rapid blips     -> "found it, start counting"
+#   2. LONG flashes          -> the tens digit
+#   3. SHORT flashes         -> the units digit
+#
+# So blip-blip-blip, one long, six short = GP16.
+# Blip-blip-blip and nothing after       = GP0.
 #
 # Every other pin leaves the strip dark, so most of a pass is just waiting.
 # It loops forever - you get as many passes as you need to count it.
@@ -33,10 +36,10 @@ NUM_PIXELS = 30        # WS2812B count on the stand
 LEVEL = 60             # 0-255 per channel; bright to spot, low current
 COLOR_ORDER = "GRB"
 
-MARKER_SECONDS = 1.0   # length of the solid green "found it" marker
-LONG_BLINK = 0.5       # tens digit
-SHORT_BLINK = 0.18     # units digit
-GAP = 0.18             # gap between blinks
+BLIP = 0.09            # the three rapid "found it" blips
+LONG_BLINK = 0.75      # tens digit - deliberately much longer than SHORT
+SHORT_BLINK = 0.15     # units digit
+GAP = 0.28             # gap between flashes
 
 # Pins to leave alone. On a Raspberry Pi Pico these three are wired to internal
 # functions (SMPS mode, VBUS sense, onboard LED) rather than brought out, so
@@ -58,9 +61,9 @@ def frame(rgb):
 
 
 OFF = frame((0, 0, 0))
-GREEN = frame((0, LEVEL, 0))
-BLUE = frame((0, 0, LEVEL))
-WHITE = frame((LEVEL, LEVEL, LEVEL))
+# Every channel on. Whatever the colour order is, and whether the strip is RGB or
+# RGBW, this lights - which is the point: the code below carries no colour meaning.
+ON = frame((LEVEL, LEVEL, LEVEL))
 
 
 def gp_pins():
@@ -86,18 +89,20 @@ def pulse(pin_out, colour, seconds):
 
 
 def signal(pin_out, number):
-    """Light the strip, then blink the pin number on it."""
-    pulse(pin_out, GREEN, MARKER_SECONDS)
-    time.sleep(0.4)
+    """Three blips to get attention, then the pin number in long/short flashes."""
+    for _ in range(3):
+        pulse(pin_out, ON, BLIP)
+        time.sleep(BLIP)
+    time.sleep(1.0)
 
     tens, units = divmod(number, 10)
     for _ in range(tens):
-        pulse(pin_out, BLUE, LONG_BLINK)
+        pulse(pin_out, ON, LONG_BLINK)
         time.sleep(GAP)
     if tens:
-        time.sleep(0.3)
+        time.sleep(0.6)        # clear separation between the two digits
     for _ in range(units):
-        pulse(pin_out, WHITE, SHORT_BLINK)
+        pulse(pin_out, ON, SHORT_BLINK)
         time.sleep(GAP)
 
 
@@ -129,9 +134,10 @@ def main():
     print("LED data pin finder - {} pixels".format(NUM_PIXELS))
     print("=" * 56)
     print("Watch the strip. Most pins leave it dark - that is expected.")
-    print("When it lights GREEN, keep watching and count the blinks:")
-    print("  long BLUE = tens, short WHITE = units.")
-    print("  e.g. green, 1 long, 6 short = GP16.  green, nothing = GP0.")
+    print("When you see three rapid blips, keep watching and count:")
+    print("  LONG flashes = tens, SHORT flashes = units.")
+    print("  e.g. blips, 1 long, 6 short = GP16.  blips, nothing after = GP0.")
+    print("Colour does not matter here - only how long each flash lasts.")
     print("\nTesting {} pins, looping until you stop it.\n".format(len(pins)))
 
     while True:
