@@ -34,7 +34,6 @@ import neopixel_write
 
 NUM_PIXELS = 30        # WS2812B count on the stand
 LEVEL = 60             # 0-255 per channel; bright to spot, low current
-COLOR_ORDER = "GRB"
 
 BLIP = 0.09            # the three rapid "found it" blips
 LONG_BLINK = 0.75      # tens digit - deliberately much longer than SHORT
@@ -48,22 +47,13 @@ SKIP = ("GP23", "GP24", "GP25")
 
 # --------------------------------------------------------------- internals ----
 
-_ORDER = tuple("RGB".index(c) for c in COLOR_ORDER)
 
-
-def frame(rgb):
-    buf = bytearray(NUM_PIXELS * 3)
-    for i in range(NUM_PIXELS):
-        base = i * 3
-        for slot, source in enumerate(_ORDER):
-            buf[base + slot] = rgb[source]
-    return buf
-
-
-OFF = frame((0, 0, 0))
-# Every channel on. Whatever the colour order is, and whether the strip is RGB or
-# RGBW, this lights - which is the point: the code below carries no colour meaning.
-ON = frame((LEVEL, LEVEL, LEVEL))
+# Every channel of every pixel on, sent at RGBW width. This lights the strip
+# whatever its colour order is and whether it is RGB or RGBW: on a 3-byte strip
+# the surplus simply cascades off the end. The point is that the code below
+# carries no colour or alignment meaning - only flash length matters.
+ON = bytearray([LEVEL] * (NUM_PIXELS * 4))
+OFF = bytearray(NUM_PIXELS * 4)
 
 
 def gp_pins():
