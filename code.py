@@ -19,7 +19,12 @@ import neopixel_write
 NUM_PIXELS = 30        # WS2812B count on the stand
 BRIGHTNESS = 0.5       # 0.0-1.0. Safe to raise to 1.0 - see the power note below.
 COLOR_ORDER = "GRB"    # WS2812B is GRB. Use "RGB" if red and green come out swapped.
-DATA_PIN_NAME = None   # None = auto-detect, or force e.g. "GP0" / "NEOPIXEL"
+BYTES_PER_PIXEL = 3    # 3 = RGB (WS2812B). Set to 4 only if color_test.py says RGBW.
+
+# Which pin the strip's DIN is soldered to. "GP0" is what find_pin.py reported.
+# Set to None to auto-detect, which only works on firmware that defines
+# board.NEOPIXEL - stock Raspberry Pi Pico builds do not.
+DATA_PIN_NAME = "GP0"
 
 EFFECTS = ("rainbow", "breathe", "comet")   # cycled in this order
 EFFECT_SECONDS = 20    # how long each effect runs; None = never switch
@@ -88,11 +93,13 @@ def limit_current(buf):
 
 def render(pin_out, pattern):
     """Gamma-correct, apply brightness, reorder to the wire format, and send."""
-    buf = bytearray(NUM_PIXELS * 3)
+    buf = bytearray(NUM_PIXELS * BYTES_PER_PIXEL)
     for i, rgb in enumerate(pattern):
-        base = i * 3
+        base = i * BYTES_PER_PIXEL
         for slot, source in enumerate(_ORDER):
             buf[base + slot] = int(GAMMA[rgb[source] & 255] * BRIGHTNESS)
+        # On an RGBW strip the fourth byte is the dedicated white die. Leaving it
+        # at 0 keeps the colours saturated and costs nothing.
     if MAX_MILLIAMPS:
         buf = limit_current(buf)
     neopixel_write.neopixel_write(pin_out, buf)
