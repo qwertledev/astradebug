@@ -4,15 +4,21 @@
 # the normal situation after flashing stock Raspberry Pi Pico CircuitPython, which
 # has no `board.NEOPIXEL` because it knows nothing about this board.
 #
-# Copy over code.py on the CIRCUITPY drive, open the serial console, and watch the
-# strip. It drives each GPIO in turn with a NeoPixel signal and prints the pin name
-# as it goes. When the strip lights up, the pin printed at that moment is yours.
+# Copy onto the CIRCUITPY drive renamed to `code.py`, then just watch the strip.
+# No serial console needed: when the correct pin is reached the strip lights, and
+# it then blinks its own number at you.
 #
-# Then put that name into DATA_PIN_NAME at the top of code.py, e.g.
+#   1. solid GREEN for a second  -> "this is the pin"
+#   2. long BLUE blinks          -> the tens digit
+#   3. short WHITE blinks        -> the units digit
 #
-#     DATA_PIN_NAME = "GP0"
+# So GREEN, then one long blue, then six short white = GP16.
+# GREEN with no blinks at all    = GP0.
 #
-# It loops forever, so you get as many passes as you need to catch it.
+# Every other pin leaves the strip dark, so most of a pass is just waiting.
+# It loops forever - you get as many passes as you need to count it.
+#
+# The same information is printed to the serial console if you have one open.
 
 import time
 
@@ -24,9 +30,13 @@ import neopixel_write
 # ----------------------------------------------------------------- config ----
 
 NUM_PIXELS = 30        # WS2812B count on the stand
-DWELL = 1.2            # seconds to hold each pin lit
-LEVEL = 60             # 0-255 per channel; bright enough to spot, low current
+LEVEL = 60             # 0-255 per channel; bright to spot, low current
 COLOR_ORDER = "GRB"
+
+MARKER_SECONDS = 1.0   # length of the solid green "found it" marker
+LONG_BLINK = 0.5       # tens digit
+SHORT_BLINK = 0.18     # units digit
+GAP = 0.18             # gap between blinks
 
 # Pins to leave alone. On a Raspberry Pi Pico these three are wired to internal
 # functions (SMPS mode, VBUS sense, onboard LED) rather than brought out, so
@@ -36,6 +46,21 @@ SKIP = ("GP23", "GP24", "GP25")
 # --------------------------------------------------------------- internals ----
 
 _ORDER = tuple("RGB".index(c) for c in COLOR_ORDER)
+
+
+def frame(rgb):
+    buf = bytearray(NUM_PIXELS * 3)
+    for i in range(NUM_PIXELS):
+        base = i * 3
+        for slot, source in enumerate(_ORDER):
+            buf[base + slot] = rgb[source]
+    return buf
+
+
+OFF = frame((0, 0, 0))
+GREEN = frame((0, LEVEL, 0))
+BLUE = frame((0, 0, LEVEL))
+WHITE = frame((LEVEL, LEVEL, LEVEL))
 
 
 def gp_pins():
@@ -51,24 +76,33 @@ def gp_pins():
         except ValueError:
             continue          # e.g. GPIO aliases that aren't plain GPn
         found.append((number, name))
-    return [name for _, name in sorted(found)]
+    return sorted(found)
 
 
-def frame(rgb):
-    buf = bytearray(NUM_PIXELS * 3)
-    for i in range(NUM_PIXELS):
-        base = i * 3
-        for slot, source in enumerate(_ORDER):
-            buf[base + slot] = rgb[source]
-    return buf
+def pulse(pin_out, colour, seconds):
+    neopixel_write.neopixel_write(pin_out, colour)
+    time.sleep(seconds)
+    neopixel_write.neopixel_write(pin_out, OFF)
 
 
-LIT = frame((LEVEL, LEVEL, LEVEL))
-OFF = frame((0, 0, 0))
+def signal(pin_out, number):
+    """Light the strip, then blink the pin number on it."""
+    pulse(pin_out, GREEN, MARKER_SECONDS)
+    time.sleep(0.4)
+
+    tens, units = divmod(number, 10)
+    for _ in range(tens):
+        pulse(pin_out, BLUE, LONG_BLINK)
+        time.sleep(GAP)
+    if tens:
+        time.sleep(0.3)
+    for _ in range(units):
+        pulse(pin_out, WHITE, SHORT_BLINK)
+        time.sleep(GAP)
 
 
-def test(name):
-    """Drive one pin with a NeoPixel signal. Returns False if unusable."""
+def test(number, name):
+    """Drive one pin. Returns False if the pin is unusable."""
     try:
         pin_out = digitalio.DigitalInOut(getattr(board, name))
         pin_out.direction = digitalio.Direction.OUTPUT
@@ -77,10 +111,7 @@ def test(name):
         return False
 
     try:
-        neopixel_write.neopixel_write(pin_out, LIT)
-        time.sleep(DWELL)
-        neopixel_write.neopixel_write(pin_out, OFF)
-        time.sleep(0.2)
+        signal(pin_out, number)
     finally:
         pin_out.deinit()
     return True
@@ -97,17 +128,19 @@ def main():
     print("\n" + "=" * 56)
     print("LED data pin finder - {} pixels".format(NUM_PIXELS))
     print("=" * 56)
-    print("Watch the strip. When it lights, note the pin printed at")
-    print("that moment, then set DATA_PIN_NAME in code.py to it.")
-    print("\nTesting {} pins, {}s each (~{:.0f}s per pass):\n".format(
-        len(pins), DWELL, len(pins) * (DWELL + 0.2)))
+    print("Watch the strip. Most pins leave it dark - that is expected.")
+    print("When it lights GREEN, keep watching and count the blinks:")
+    print("  long BLUE = tens, short WHITE = units.")
+    print("  e.g. green, 1 long, 6 short = GP16.  green, nothing = GP0.")
+    print("\nTesting {} pins, looping until you stop it.\n".format(len(pins)))
 
     while True:
-        for name in pins:
+        for number, name in pins:
             print("  {:<6} <- watch now".format(name))
-            test(name)
+            test(number, name)
+            time.sleep(0.8)
         print("\n  --- end of pass, starting over ---\n")
-        time.sleep(1.0)
+        time.sleep(2.0)
 
 
 try:
