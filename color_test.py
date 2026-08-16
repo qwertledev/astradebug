@@ -28,7 +28,7 @@ import neopixel_write
 
 # ----------------------------------------------------------------- config ----
 
-DATA_PIN = "GP0"       # <-- the pin find_pin.py identified
+DATA_PIN = "GP9"       # <-- the pin find_pin.py identified
 NUM_PIXELS = 30
 LEVEL = 70             # 0-255
 HOLD = 2.5             # seconds to show each state

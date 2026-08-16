@@ -21,10 +21,10 @@ BRIGHTNESS = 0.5       # 0.0-1.0. Safe to raise to 1.0 - see the power note belo
 COLOR_ORDER = "GRB"    # WS2812B is GRB. Use "RGB" if red and green come out swapped.
 BYTES_PER_PIXEL = 3    # 3 = RGB (WS2812B). Set to 4 only if color_test.py says RGBW.
 
-# Which pin the strip's DIN is soldered to. "GP0" is what find_pin.py reported.
+# Which pin the strip's DIN is soldered to. "GP9" is what find_pin.py reported.
 # Set to None to auto-detect, which only works on firmware that defines
 # board.NEOPIXEL - stock Raspberry Pi Pico builds do not.
-DATA_PIN_NAME = "GP0"
+DATA_PIN_NAME = "GP9"
 
 EFFECTS = ("rainbow", "breathe", "comet")   # cycled in this order
 EFFECT_SECONDS = 20    # how long each effect runs; None = never switch
